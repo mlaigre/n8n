@@ -4,15 +4,11 @@ import {
 	INodeExecutionData,
 	INodeType,
 	INodeTypeDescription,
-	NodeOperationError,
 } from 'n8n-workflow';
 
 import * as pgPromise from 'pg-promise';
 
-import {
-	pgInsert,
-	pgQuery,
-} from '../Postgres/Postgres.node.functions';
+import { pgQuery } from '../Postgres/Postgres.node.functions';
 
 export class QuestDb implements INodeType {
 	description: INodeTypeDescription = {
@@ -73,9 +69,9 @@ export class QuestDb implements INodeType {
 					},
 				},
 				default: '',
-				placeholder: 'SELECT id, name FROM product WHERE quantity > $1 AND price <= $2',
+				placeholder: 'SELECT id, name FROM product WHERE id < 40',
 				required: true,
-				description: 'The SQL query to execute. You can use n8n expressions or $1 and $2 in conjunction with query parameters.',
+				description: 'The SQL query to execute.',
 			},
 
 			// ----------------------------------
@@ -84,7 +80,7 @@ export class QuestDb implements INodeType {
 			{
 				displayName: 'Schema',
 				name: 'schema',
-				type: 'hidden', // Schema is used by pgInsert
+				type: 'string',
 				displayOptions: {
 					show: {
 						operation: [
@@ -92,7 +88,8 @@ export class QuestDb implements INodeType {
 						],
 					},
 				},
-				default: '',
+				default: 'public',
+				required: true,
 				description: 'Name of the schema the table belongs to',
 			},
 			{
@@ -116,7 +113,9 @@ export class QuestDb implements INodeType {
 				type: 'string',
 				displayOptions: {
 					show: {
-						operation: ['insert'],
+						operation: [
+							'insert',
+						],
 					},
 				},
 				default: '',
@@ -130,81 +129,13 @@ export class QuestDb implements INodeType {
 				type: 'string',
 				displayOptions: {
 					show: {
-						operation: ['insert'],
-					},
-				},
-				default: '*',
-				description: 'Comma separated list of the fields that the operation will return',
-			},
-			// ----------------------------------
-			//         additional fields
-			// ----------------------------------
-			{
-				displayName: 'Additional Fields',
-				name: 'additionalFields',
-				type: 'collection',
-				placeholder: 'Add Field',
-				default: {},
-				displayOptions: {
-					show: {
-						operation: [
-							'executeQuery',
-						],
-					},
-				},
-				options: [
-					{
-						displayName: 'Mode',
-						name: 'mode',
-						type: 'options',
-						options: [
-							{
-								name: 'Independently',
-								value: 'independently',
-								description: 'Execute each query independently',
-							},
-							{
-								name: 'Transaction',
-								value: 'transaction',
-								description: 'Executes all queries in a single transaction',
-							},
-						],
-						default: 'independently',
-						description: [
-							'The way queries should be sent to database.',
-							'Can be used in conjunction with <b>Continue on Fail</b>.',
-							'See the docs for more examples',
-						].join('<br>'),
-					},
-					{
-						displayName: 'Query Parameters',
-						name: 'queryParams',
-						type: 'string',
-						displayOptions: {
-							show: {
-								'/operation': [
-									'executeQuery',
-								],
-							},
-						},
-						default: '',
-						placeholder: 'quantity,price',
-						description: 'Comma separated list of properties which should be used as query parameters.',
-					},
-				],
-			},
-			{
-				displayName: 'Additional Fields',
-				name: 'additionalFields',
-				type: 'hidden',
-				default: {},
-				displayOptions: {
-					show: {
 						operation: [
 							'insert',
 						],
 					},
 				},
+				default: '*',
+				description: 'Comma separated list of the fields that the operation will return',
 			},
 		],
 	};
@@ -213,7 +144,7 @@ export class QuestDb implements INodeType {
 		const credentials = this.getCredentials('questDb');
 
 		if (credentials === undefined) {
-			throw new NodeOperationError(this.getNode(), 'No credentials got returned!');
+			throw new Error('No credentials got returned!');
 		}
 
 		const pgp = pgPromise();
@@ -230,7 +161,7 @@ export class QuestDb implements INodeType {
 
 		const db = pgp(config);
 
-		let returnItems: INodeExecutionData[] = [];
+		let returnItems = [];
 
 		const items = this.getInputData();
 		const operation = this.getNodeParameter('operation', 0) as string;
@@ -240,33 +171,40 @@ export class QuestDb implements INodeType {
 			//         executeQuery
 			// ----------------------------------
 
-			const additionalFields = this.getNodeParameter('additionalFields', 0) as IDataObject;
-			const mode = (additionalFields.mode || 'independently') as string;
+			const queryResult = await pgQuery(this.getNodeParameter, pgp, db, items);
 
-			const queryResult = await pgQuery(this.getNodeParameter, pgp, db, items, this.continueOnFail(), mode);
-
-			returnItems = this.helpers.returnJsonArray(queryResult);
+			returnItems = this.helpers.returnJsonArray(queryResult[0] as IDataObject[]);
 		} else if (operation === 'insert') {
 			// ----------------------------------
 			//         insert
 			// ----------------------------------
-
-			// Transaction and multiple won't work properly with QuestDB.
-			// So we send queries independently.
-			await pgInsert(this.getNodeParameter, pgp, db, items, this.continueOnFail(), 'independently');
-
+			const tableName = this.getNodeParameter('table', 0) as string;
 			const returnFields = this.getNodeParameter('returnFields', 0) as string;
-			const table = this.getNodeParameter('table', 0) as string;
 
-			const insertData = await db.any('SELECT ${columns:name} from ${table:name}', {
-				columns: returnFields.split(',').map(value => value.trim()).filter(value => !!value),
-				table,
+			const queries : string[] = [];
+			items.map(item => {
+				const columns = Object.keys(item.json);
+
+				const values : string = columns.map((col : string) => {
+					if (typeof item.json[col] === 'string') {
+						return `\'${item.json[col]}\'`;
+					} else {
+						return item.json[col];
+					}
+				}).join(',');
+
+				const query = `INSERT INTO ${tableName} (${columns.join(',')}) VALUES (${values});`;
+				queries.push(query);
 			});
 
-			returnItems = this.helpers.returnJsonArray(insertData);
+			await db.any(pgp.helpers.concat(queries));
+
+			const returnedItems = await db.any(`SELECT ${returnFields} from ${tableName}`);
+
+			returnItems = this.helpers.returnJsonArray(returnedItems as IDataObject[]);
 		} else {
 			await pgp.end();
-			throw new NodeOperationError(this.getNode(), `The operation "${operation}" is not supported!`);
+			throw new Error(`The operation "${operation}" is not supported!`);
 		}
 
 		// Close the connection

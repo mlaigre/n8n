@@ -3,8 +3,7 @@ import {
 	IDataObject,
 	INodeExecutionData,
 	INodeType,
-	INodeTypeDescription,
-	NodeOperationError,
+	INodeTypeDescription
 } from 'n8n-workflow';
 
 import * as pgPromise from 'pg-promise';
@@ -61,6 +60,25 @@ export class Postgres implements INodeType {
 			//         executeQuery
 			// ----------------------------------
 			{
+				displayName: 'Output format',
+				name: 'outputFormat',
+				type: 'options',
+				options: [
+					{
+						name: 'All of first input',
+						value: 'allOfFirst',
+						description: 'The output array is the results of the first query.',
+					},
+					{
+						name: 'One per input',
+						value: 'onePerInput',
+						description: 'The output array is composed of the first results of each query.',
+					},
+				],
+				default: 'allOfFirst',
+				description: 'How query results are outputted.',
+			},
+			{
 				displayName: 'Query',
 				name: 'query',
 				type: 'string',
@@ -73,9 +91,9 @@ export class Postgres implements INodeType {
 					},
 				},
 				default: '',
-				placeholder: 'SELECT id, name FROM product WHERE quantity > $1 AND price <= $2',
+				placeholder: 'SELECT id, name FROM product WHERE id < 40',
 				required: true,
-				description: 'The SQL query to execute. You can use n8n expressions or $1 and $2 in conjunction with query parameters.',
+				description: 'The SQL query to execute.',
 			},
 
 			// ----------------------------------
@@ -117,9 +135,21 @@ export class Postgres implements INodeType {
 					},
 				},
 				default: '',
-				placeholder: 'id:int,name:text,description',
+				placeholder: 'id,name,description',
 				description:
-					'Comma separated list of the properties which should used as columns for the new rows.<br>You can use type casting with colons (:) like id:int.',
+					'Comma separated list of the properties which should used as columns for the new rows.',
+			},
+			{
+				displayName: 'Return Fields',
+				name: 'returnFields',
+				type: 'string',
+				displayOptions: {
+					show: {
+						operation: ['insert'],
+					},
+				},
+				default: '*',
+				description: 'Comma separated list of the fields that the operation will return',
 			},
 
 			// ----------------------------------
@@ -135,7 +165,7 @@ export class Postgres implements INodeType {
 					},
 				},
 				default: 'public',
-				required: false,
+				required: true,
 				description: 'Name of the schema the table belongs to',
 			},
 			{
@@ -162,7 +192,8 @@ export class Postgres implements INodeType {
 				},
 				default: 'id',
 				required: true,
-				description: 'Comma separated list of the properties which decides which rows in the database should be updated. Normally that would be "id".',
+				description:
+					'Name of the property which decides which rows in the database should be updated. Normally that would be "id".',
 			},
 			{
 				displayName: 'Columns',
@@ -174,80 +205,9 @@ export class Postgres implements INodeType {
 					},
 				},
 				default: '',
-				placeholder: 'name:text,description',
+				placeholder: 'name,description',
 				description:
-					'Comma separated list of the properties which should used as columns for rows to update.<br>You can use type casting with colons (:) like id:int.',
-			},
-
-			// ----------------------------------
-			//         insert,update
-			// ----------------------------------
-			{
-				displayName: 'Return Fields',
-				name: 'returnFields',
-				type: 'string',
-				displayOptions: {
-					show: {
-						operation: ['insert', 'update'],
-					},
-				},
-				default: '*',
-				description: 'Comma separated list of the fields that the operation will return',
-			},
-			// ----------------------------------
-			//         Additional fields
-			// ----------------------------------
-			{
-				displayName: 'Additional Fields',
-				name: 'additionalFields',
-				type: 'collection',
-				placeholder: 'Add Field',
-				default: {},
-				options: [
-					{
-						displayName: 'Mode',
-						name: 'mode',
-						type: 'options',
-						options: [
-							{
-								name: 'Independently',
-								value: 'independently',
-								description: 'Execute each query independently',
-							},
-							{
-								name: 'Multiple queries',
-								value: 'multiple',
-								description: '<b>Default</b>. Sends multiple queries at once to database.',
-							},
-							{
-								name: 'Transaction',
-								value: 'transaction',
-								description: 'Executes all queries in a single transaction',
-							},
-						],
-						default: 'multiple',
-						description: [
-							'The way queries should be sent to database.',
-							'Can be used in conjunction with <b>Continue on Fail</b>.',
-							'See the docs for more examples',
-						].join('<br>'),
-					},
-					{
-						displayName: 'Query Parameters',
-						name: 'queryParams',
-						type: 'string',
-						displayOptions: {
-							show: {
-								'/operation': [
-									'executeQuery',
-								],
-							},
-						},
-						default: '',
-						placeholder: 'quantity,price',
-						description: 'Comma separated list of properties which should be used as query parameters.',
-					},
-				],
+					'Comma separated list of the properties which should used as columns for rows to update.',
 			},
 		],
 	};
@@ -256,7 +216,7 @@ export class Postgres implements INodeType {
 		const credentials = this.getCredentials('postgres');
 
 		if (credentials === undefined) {
-			throw new NodeOperationError(this.getNode(), 'No credentials got returned!');
+			throw new Error('No credentials got returned!');
 		}
 
 		const pgp = pgPromise();
@@ -289,20 +249,26 @@ export class Postgres implements INodeType {
 			// ----------------------------------
 			//         executeQuery
 			// ----------------------------------
-
-			const queryResult = await pgQuery(this.getNodeParameter, pgp, db, items, this.continueOnFail());
-
-			returnItems = this.helpers.returnJsonArray(queryResult);
+			const queryResults = await pgQuery(this.getNodeParameter, pgp, db, items);
+			const outputFormat = this.getNodeParameter('outputFormat', 0) as string;
+			const results = outputFormat === 'allOfFirst' ?
+				queryResults[0] :
+				queryResults.map(queryResult => queryResult[0] ?? {});
+			returnItems = this.helpers.returnJsonArray(results as IDataObject[]);
 		} else if (operation === 'insert') {
 			// ----------------------------------
 			//         insert
 			// ----------------------------------
 
-			const insertData = await pgInsert(this.getNodeParameter, pgp, db, items, this.continueOnFail());
+			const [insertData, insertItems] = await pgInsert(this.getNodeParameter, pgp, db, items);
 
+			// Add the id to the data
 			for (let i = 0; i < insertData.length; i++) {
 				returnItems.push({
-					json: insertData[i],
+					json: {
+						...insertData[i],
+						...insertItems[i],
+					},
 				});
 			}
 		} else if (operation === 'update') {
@@ -310,12 +276,12 @@ export class Postgres implements INodeType {
 			//         update
 			// ----------------------------------
 
-			const updateItems = await pgUpdate(this.getNodeParameter, pgp, db, items, this.continueOnFail());
+			const updateItems = await pgUpdate(this.getNodeParameter, pgp, db, items);
 
 			returnItems = this.helpers.returnJsonArray(updateItems);
 		} else {
 			await pgp.end();
-			throw new NodeOperationError(this.getNode(), `The operation "${operation}" is not supported!`);
+			throw new Error(`The operation "${operation}" is not supported!`);
 		}
 
 		// Close the connection
