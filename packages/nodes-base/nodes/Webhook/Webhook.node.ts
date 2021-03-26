@@ -75,6 +75,17 @@ export class Webhook implements INodeType {
 					},
 				},
 			},
+			{
+				name: 'httpQueryAuth',
+				required: true,
+				displayOptions: {
+					show: {
+						authentication: [
+							'queryAuth',
+						],
+					},
+				},
+			},
 		],
 		webhooks: [
 			{
@@ -104,6 +115,10 @@ export class Webhook implements INodeType {
 					{
 						name: 'Header Auth',
 						value: 'headerAuth',
+					},
+					{
+						name: 'Query Auth',
+						value: 'queryAuth',
 					},
 					{
 						name: 'None',
@@ -390,6 +405,7 @@ export class Webhook implements INodeType {
 		const req = this.getRequestObject();
 		const resp = this.getResponseObject();
 		const headers = this.getHeaderData();
+		const queries = this.getQueryData();
 		const realm = 'Webhook';
 
 		if (authentication === 'basicAuth') {
@@ -424,6 +440,21 @@ export class Webhook implements INodeType {
 			const headerValue = (httpHeaderAuth.value as string);
 
 			if (!headers.hasOwnProperty(headerName) || (headers as IDataObject)[headerName] !== headerValue) {
+				// Provided authentication data is wrong
+				return authorizationError(resp, realm, 403);
+			}
+		} else if (authentication === 'queryAuth') {
+			// Special header with value is needed to call webhook
+			const httpQueryAuth = await this.getCredentials('httpQueryAuth');
+
+			if (httpQueryAuth === undefined || !httpQueryAuth.name || !httpQueryAuth.value) {
+				// Data is not defined on node so can not authenticate
+				return authorizationError(resp, realm, 500, 'No authentication data defined on node!');
+			}
+			const queryName = (httpQueryAuth.name as string).toLowerCase();
+			const queryValue = (httpQueryAuth.value as string);
+
+			if (!queries.hasOwnProperty(queryName) || (queries as IDataObject)[queryName] !== queryValue) {
 				// Provided authentication data is wrong
 				return authorizationError(resp, realm, 403);
 			}
