@@ -72,6 +72,17 @@ export class HttpRequest implements INodeType {
 				},
 			},
 			{
+				name: 'httpQueryAuth',
+				required: true,
+				displayOptions: {
+					show: {
+						authentication: [
+							'queryAuth',
+						],
+					},
+				},
+			},
+			{
 				name: 'oAuth1Api',
 				required: true,
 				displayOptions: {
@@ -111,6 +122,10 @@ export class HttpRequest implements INodeType {
 					{
 						name: 'Header Auth',
 						value: 'headerAuth',
+					},
+					{
+						name: 'Query Auth',
+						value: 'queryAuth',
 					},
 					{
 						name: 'OAuth1',
@@ -620,6 +635,7 @@ export class HttpRequest implements INodeType {
 		const httpBasicAuth = this.getCredentials('httpBasicAuth');
 		const httpDigestAuth = this.getCredentials('httpDigestAuth');
 		const httpHeaderAuth = this.getCredentials('httpHeaderAuth');
+		const httpQueryAuth = this.getCredentials('httpQueryAuth');
 		const oAuth1Api = this.getCredentials('oAuth1Api');
 		const oAuth2Api = this.getCredentials('oAuth2Api');
 
@@ -665,6 +681,7 @@ export class HttpRequest implements INodeType {
 
 			requestOptions = {
 				headers: {},
+				qs: {},
 				method: requestMethod,
 				uri: url,
 				gzip: true,
@@ -844,6 +861,9 @@ export class HttpRequest implements INodeType {
 			}
 			if (httpHeaderAuth !== undefined) {
 				requestOptions.headers![httpHeaderAuth.name as string] = httpHeaderAuth.value;
+			}
+			if (httpQueryAuth !== undefined) {
+				requestOptions.qs![httpQueryAuth.name as string] = httpQueryAuth.value;
 			}
 			if (httpDigestAuth !== undefined) {
 				requestOptions.auth = {
